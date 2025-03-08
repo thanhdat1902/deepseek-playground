@@ -1,2 +1,7 @@
 lora_qwen_output/
 deepseek_lora_output/
+finetuned_model/
+finetuned_model_lora/
+finetuned_model_merged/
+finetuned_model_v1/
+finetuned_model_merged_v1/

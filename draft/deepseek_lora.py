@@ -1,3 +1,4 @@
+# deepseek_lora.py
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, Trainer, TrainingArguments
 from peft import LoraConfig, get_peft_model
@@ -13,44 +14,39 @@ model.to(device)
 
 # Configure LoRA
 lora_config = LoraConfig(
-    r=8,  # Reduced rank
-    lora_alpha=16,
+    r=16,
+    lora_alpha=32,
     target_modules=["q_proj", "v_proj"],
-    lora_dropout=0.05,
+    lora_dropout=0.1,
     bias="none",
     task_type="CAUSAL_LM"
 )
-
 model = get_peft_model(model, lora_config)
 
 # Load dataset
 dataset = load_dataset("json", data_files="disaster_data.jsonl")
 print(f"Dataset size: {len(dataset['train'])} examples")
 
-# Tokenize with output-only labels
+# Tokenize with consistent max_length
 def tokenize_function(examples):
     instructions = examples["instruction"]
     outputs = examples["output"]
-    input_encodings = tokenizer(
-        instructions,
+    # Combine instruction and output with a separator
+    combined = [f"{instr}\n\nAnalysis:\n{out}" for instr, out in zip(instructions, outputs)]
+    encodings = tokenizer(
+        combined,
         truncation=True,
         padding="max_length",
-        max_length=128,
+        max_length=768,  # Increased to fit both input and output
         return_tensors="pt"
     )
-    output_encodings = tokenizer(
-        outputs,
-        truncation=True,
-        padding="max_length",
-        max_length=128,
-        return_tensors="pt"
-    )
-    input_ids = input_encodings["input_ids"]
-    attention_mask = input_encodings["attention_mask"]
-    labels = output_encodings["input_ids"]
-    labels[output_encodings["attention_mask"] == 0] = -100
-    print(f"Sample input: {instructions[0]}")
-    print(f"Sample output: {outputs[0]}")
+    input_ids = encodings["input_ids"]
+    attention_mask = encodings["attention_mask"]
+    labels = input_ids.clone()
+    # Mask input portion in labels
+    for i in range(len(instructions)):
+        input_len = len(tokenizer.encode(instructions[i], add_special_tokens=False)) + len(tokenizer.encode("\n\nAnalysis:\n", add_special_tokens=False))
+        labels[i, :input_len] = -100
     print(f"Input IDs shape: {input_ids.shape}, Labels shape: {labels.shape}")
     return {
         "input_ids": input_ids.squeeze(),
@@ -64,20 +60,19 @@ tokenized_dataset = dataset.map(
     remove_columns=["instruction", "output"]
 )
 
-# Training setup with adjusted hyperparameters
+# Training setup
 training_args = TrainingArguments(
-    output_dir="./lora_qwen_output",
+    output_dir="./deepseek_lora_output_training_args",
     per_device_train_batch_size=1,
-    gradient_accumulation_steps=2,  # Accumulate to stabilize gradients
-    num_train_epochs=20,            # More epochs for small data
-    learning_rate=2e-5,             # Back to moderate LR
+    gradient_accumulation_steps=4,
+    num_train_epochs=5,
+    learning_rate=2e-5,
     fp16=True,
     logging_steps=1,
     save_steps=5,
     save_total_limit=2,
     remove_unused_columns=False,
-    optim="adamw_torch",
-    warmup_steps=5                 # Longer warmup
+    optim="adamw_torch"
 )
 
 class CustomTrainer(Trainer):
@@ -87,6 +82,7 @@ class CustomTrainer(Trainer):
         labels = inputs["labels"].to(device)
         outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
         loss = outputs.loss
+        print(f"Step loss: {loss.item()}")
         return (loss, outputs) if return_outputs else loss
 
 trainer = CustomTrainer(
@@ -96,9 +92,9 @@ trainer = CustomTrainer(
 )
 
 total_samples = len(tokenized_dataset["train"])
-batch_size = training_args.per_device_train_batch_size * training_args.gradient_accumulation_steps
-total_steps = (total_samples // batch_size) * training_args.num_train_epochs
-print(f"Total training steps: {total_steps}")  # Now 30 with 6 samples, 5 epochs
+effective_batch_size = training_args.per_device_train_batch_size * training_args.gradient_accumulation_steps
+total_steps = (total_samples // effective_batch_size) * training_args.num_train_epochs
+print(f"Total training steps: {total_steps}")  # 50 with 10 samples, 5 epochs
 
 # Fine-tune
 trainer.train()
