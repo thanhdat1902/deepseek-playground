@@ -114,7 +114,7 @@ inputs = tokenizer(input_text, return_tensors="pt").to("cuda")
 
 outputs = model.generate(
     **inputs,
-    max_new_tokens=1024,  # Increased to 1024 for full output
+    max_new_tokens=4096,  # Increased to 1024 for full output
     do_sample=True,
     temperature=0.7,
     top_p=0.95,
